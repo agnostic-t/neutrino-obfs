@@ -1,7 +1,7 @@
 package xobfs
 
 import (
-	"encoding/binary"
+	"crypto/rand"
 	"io"
 	"net"
 
@@ -16,6 +16,55 @@ type XOBFSConn struct {
 	Psk []byte
 
 	readBuf []byte
+}
+
+func encodeByteNoZero(b, baseMask uint8) uint8 {
+	mask := baseMask
+	if mask == b {
+		mask ^= 0x80
+	}
+	return b ^ mask
+}
+
+func decodeByteNoZero(enc, baseMask uint8) uint8 {
+	candidate := enc ^ baseMask
+	if candidate == baseMask {
+		return enc ^ (baseMask ^ 0x80)
+	}
+	return candidate
+}
+
+func encodeHeader(len uint16, psk []byte) ([4]byte, error) {
+	var hdr [4]byte
+	if _, err := rand.Read(hdr[2:4]); err != nil {
+		return hdr, err
+	}
+	for i := 2; i < 4; i++ {
+		if hdr[i] == 0 {
+			hdr[i] = 0x01
+		}
+	}
+
+	b0 := uint8(len >> 8)
+	b1 := uint8(len & 0xFF)
+
+	baseMask1 := psk[0] ^ 0x5A
+	baseMask2 := psk[1] ^ 0xA5
+
+	hdr[0] = encodeByteNoZero(b0, baseMask1)
+	hdr[1] = encodeByteNoZero(b1, baseMask2)
+
+	return hdr, nil
+}
+
+func decodeHeader(hdr [4]byte, psk []byte) (uint16, [2]byte, error) {
+	baseMask1 := psk[0] ^ 0x5A
+	baseMask2 := psk[1] ^ 0xA5
+
+	b0 := decodeByteNoZero(hdr[0], baseMask1)
+	b1 := decodeByteNoZero(hdr[1], baseMask2)
+
+	return uint16(b0)<<8 | uint16(b1), [2]byte{hdr[2], hdr[3]}, nil
 }
 
 func (c *XOBFSConn) Write(b []byte) (int, error) {
@@ -33,9 +82,14 @@ func (c *XOBFSConn) Write(b []byte) (int, error) {
 			return totalWritten, err
 		}
 
-		frame := make([]byte, 2+len(obfsData))
-		binary.BigEndian.PutUint16(frame[:2], uint16(len(obfsData)))
-		copy(frame[2:], obfsData)
+		frame := make([]byte, 4+len(obfsData))
+		header, err := encodeHeader(uint16(len(obfsData)), c.Psk)
+		if err != nil {
+			return totalWritten, err
+		}
+
+		copy(frame[:4], header[:])
+		copy(frame[4:], obfsData)
 
 		if _, err := c.Conn.Write(frame); err != nil {
 			return totalWritten, err
@@ -54,11 +108,11 @@ func (c *XOBFSConn) Read(b []byte) (int, error) {
 		return n, nil
 	}
 
-	lenBuf := make([]byte, 2)
-	if _, err := io.ReadFull(c.Conn, lenBuf); err != nil {
+	var header [4]byte
+	if _, err := io.ReadFull(c.Conn, header[:]); err != nil {
 		return 0, err
 	}
-	frameLen := binary.BigEndian.Uint16(lenBuf)
+	frameLen, _, err := decodeHeader(header, c.Psk)
 
 	frameBuf := make([]byte, frameLen)
 	if _, err := io.ReadFull(c.Conn, frameBuf); err != nil {
