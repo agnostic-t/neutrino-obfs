@@ -34,7 +34,7 @@ func decodeByteNoZero(enc, baseMask uint8) uint8 {
 	return candidate
 }
 
-func encodeHeader(len uint16, psk []byte) ([4]byte, error) {
+func ObfsEncodeHeader(len uint16, psk []byte) ([4]byte, error) {
 	var hdr [4]byte
 	if _, err := rand.Read(hdr[2:4]); err != nil {
 		return hdr, err
@@ -57,7 +57,7 @@ func encodeHeader(len uint16, psk []byte) ([4]byte, error) {
 	return hdr, nil
 }
 
-func decodeHeader(hdr [4]byte, psk []byte) (uint16, [2]byte, error) {
+func ObfsDecodeHeader(hdr [4]byte, psk []byte) (uint16, [2]byte, error) {
 	baseMask1 := psk[0] ^ 0x5A
 	baseMask2 := psk[1] ^ 0xA5
 
@@ -83,7 +83,7 @@ func (c *XOBFSConn) Write(b []byte) (int, error) {
 		}
 
 		frame := make([]byte, 4+len(obfsData))
-		header, err := encodeHeader(uint16(len(obfsData)), c.Psk)
+		header, err := ObfsEncodeHeader(uint16(len(obfsData)), c.Psk)
 		if err != nil {
 			return totalWritten, err
 		}
@@ -112,7 +112,7 @@ func (c *XOBFSConn) Read(b []byte) (int, error) {
 	if _, err := io.ReadFull(c.Conn, header[:]); err != nil {
 		return 0, err
 	}
-	frameLen, _, err := decodeHeader(header, c.Psk)
+	frameLen, _, err := ObfsDecodeHeader(header, c.Psk)
 
 	frameBuf := make([]byte, frameLen)
 	if _, err := io.ReadFull(c.Conn, frameBuf); err != nil {
